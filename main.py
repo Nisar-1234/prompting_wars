@@ -7,7 +7,9 @@ from flask import Flask, request, jsonify, send_from_directory
 app = Flask(__name__, static_folder="static")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent"
+GEMINI_BASE = "https://generativelanguage.googleapis.com/v1"
+GEMINI_MODEL = "gemini-1.5-flash"
+GEMINI_URL = f"{GEMINI_BASE}/models/{GEMINI_MODEL}:generateContent"
 
 SYSTEM_PROMPT = """You are VOYAGER, an expert AI travel planner. Always return ONLY valid JSON, no markdown, no explanation.
 
@@ -53,19 +55,36 @@ def call_gemini(prompt: str, api_key: str) -> dict:
     if not key:
         return {"error": "No Gemini API key provided"}
 
+    # Try models in order of preference
+    models_to_try = [
+        "gemini-1.5-flash",
+        "gemini-1.5-pro",
+        "gemini-1.0-pro",
+        "gemini-pro"
+    ]
+
     payload = {
         "contents": [{"parts": [{"text": SYSTEM_PROMPT + "\n\nUSER REQUEST:\n" + prompt}]}],
         "generationConfig": {"temperature": 0.7, "maxOutputTokens": 4096}
     }
 
-    resp = requests.post(f"{GEMINI_URL}?key={key}", json=payload, timeout=30)
-    if resp.status_code != 200:
-        return {"error": f"Gemini API error: {resp.status_code} - {resp.text[:200]}"}
+    last_error = ""
+    for model in models_to_try:
+        for api_version in ["v1", "v1beta"]:
+            url = f"https://generativelanguage.googleapis.com/{api_version}/models/{model}:generateContent?key={key}"
+            try:
+                resp = requests.post(url, json=payload, timeout=30)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    text = data["candidates"][0]["content"]["parts"][0]["text"]
+                    text = re.sub(r"```json\s*|\s*```", "", text).strip()
+                    return json.loads(text)
+                last_error = f"{model} ({api_version}): {resp.status_code} - {resp.text[:100]}"
+            except Exception as e:
+                last_error = str(e)
+                continue
 
-    data = resp.json()
-    text = data["candidates"][0]["content"]["parts"][0]["text"]
-    text = re.sub(r"```json\s*|\s*```", "", text).strip()
-    return json.loads(text)
+    return {"error": f"All models failed. Last error: {last_error}"}
 
 
 @app.route("/")
@@ -134,6 +153,27 @@ Only change what is necessary. Preserve the overall trip if the modification is 
 @app.route("/api/health")
 def health():
     return jsonify({"status": "ok", "service": "VOYAGER AI", "gemini_configured": bool(GEMINI_API_KEY)})
+
+
+@app.route("/api/test-key", methods=["POST"])
+def test_key():
+    key = (request.json or {}).get("api_key", "") or GEMINI_API_KEY
+    if not key:
+        return jsonify({"error": "No key provided"}), 400
+
+    results = []
+    for model in ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-1.0-pro", "gemini-pro"]:
+        for version in ["v1", "v1beta"]:
+            url = f"https://generativelanguage.googleapis.com/{version}/models/{model}:generateContent?key={key}"
+            try:
+                r = requests.post(url, json={"contents": [{"parts": [{"text": "Say hello in one word"}]}]}, timeout=10)
+                results.append({"model": model, "version": version, "status": r.status_code, "ok": r.status_code == 200})
+                if r.status_code == 200:
+                    return jsonify({"working_model": model, "version": version, "all_results": results})
+            except Exception as e:
+                results.append({"model": model, "version": version, "error": str(e)})
+
+    return jsonify({"error": "No working model found", "all_results": results})
 
 
 if __name__ == "__main__":
