@@ -2,9 +2,11 @@
 let apiKey = localStorage.getItem('voyager_key') || '';
 let currentTrip = null;
 let selectedPrefs = [];
-let _planning = false;   // debounce guard
-let _modifying = false;  // debounce guard
-let _currentAbort = null; // AbortController reference
+let _planning = false;
+let _modifying = false;
+let _currentAbort = null;
+let _retryTimer = null;   // countdown interval reference
+let _pendingPlanPayload = null;   // stored so auto-retry can replay it
 
 // ── SETUP ─────────────────────────────────────────────────────
 function startApp() {
@@ -35,6 +37,48 @@ window.onload = () => {
     document.getElementById('app').classList.remove('hidden');
   }
 };
+
+// ── RATE LIMIT HANDLER ─────────────────────────────────────────
+/**
+ * Shows a live countdown in chat and auto-retries the API when it hits zero.
+ * @param {number} seconds  - how long to wait before retrying
+ * @param {function} retryFn - zero-arg function to call after countdown
+ */
+function handleRateLimit(seconds, retryFn) {
+  if (_retryTimer) clearInterval(_retryTimer);
+
+  let remaining = seconds;
+  const msgId = 'rl-' + Date.now();
+
+  // Show countdown message in chat
+  const el = document.getElementById('chat-msgs');
+  const div = document.createElement('div');
+  div.className = 'msg msg-ai';
+  div.id = msgId;
+  div.innerHTML = `
+    <div class="msg-label">🤖 VOYAGER AI</div>
+    <div id="rl-body">
+      ⚠️ <strong>Gemini free-tier quota hit</strong> — all models are cooling down.<br><br>
+      🔁 Auto-retrying in <strong id="rl-count">${remaining}s</strong>&hellip;
+      <br><small style="color:var(--muted)">No action needed. Trying gemini-2.0-flash → flash-lite → flash-8b automatically.</small>
+    </div>`;
+  el.appendChild(div);
+  el.scrollTop = el.scrollHeight;
+
+  _retryTimer = setInterval(() => {
+    remaining--;
+    const counter = document.getElementById('rl-count');
+    if (counter) counter.textContent = remaining + 's';
+
+    if (remaining <= 0) {
+      clearInterval(_retryTimer);
+      _retryTimer = null;
+      const body = document.getElementById('rl-body');
+      if (body) body.innerHTML = '🔄 <strong>Retrying now…</strong>';
+      retryFn();
+    }
+  }, 1000);
+}
 
 // ── CHIPS ─────────────────────────────────────────────────────
 function toggleChip(el) {
@@ -87,6 +131,12 @@ async function planTrip() {
     removeThinking(thinkId);
 
     if (data.error) {
+      // Quota exceeded: show countdown + auto-retry
+      if (data.error === 'quota_exceeded') {
+        const payload = { destination: dest, days: +days, travelers: +travelers, budget: +budget, preferences: selectedPrefs, api_key: apiKey };
+        handleRateLimit(data.retry_after || 60, () => _replayPlan(payload));
+        return;
+      }
       addMsg('ai', `⚠️ <strong>Error from Gemini API:</strong><br><code>${data.error}</code><br><br>Please check your API key in Settings and try again.`);
       return;
     }
@@ -144,6 +194,14 @@ async function sendModify(e) {
   } catch (e) {
     clearTimeout(timeoutId);
     removeThinking(thinkId);
+    // Parse quota_exceeded from modify too
+    try {
+      const parsed = (typeof e.message === 'string') ? JSON.parse(e.message) : null;
+      if (parsed && parsed.error === 'quota_exceeded') {
+        handleRateLimit(parsed.retry_after || 60, () => sendModify({ preventDefault: () => {}, _replay: { msg } }));
+        return;
+      }
+    } catch (_) {}
     if (e.name === 'AbortError') {
       addMsg('ai', '⚠️ <strong>Request timed out</strong> — please try a simpler modification.');
     } else {
@@ -151,6 +209,34 @@ async function sendModify(e) {
     }
   } finally {
     _modifying = false;
+  }
+}
+
+// Internal: replays a plan request after rate-limit countdown
+async function _replayPlan(payload) {
+  _planning = false;  // reset guard so planTrip can run
+  const thinkId = addThinking();
+  try {
+    const res = await fetch('/api/plan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    removeThinking(thinkId);
+    if (data.error === 'quota_exceeded') {
+      handleRateLimit(data.retry_after || 60, () => _replayPlan(payload));
+      return;
+    }
+    if (data.error) {
+      addMsg('ai', `⚠️ <strong>Still failing:</strong><br><code>${data.error}</code>`);
+      return;
+    }
+    currentTrip = data;
+    renderTrip(data, payload.destination, data._cached);
+  } catch (e) {
+    removeThinking(thinkId);
+    addMsg('ai', '⚠️ Retry failed: ' + e.message);
   }
 }
 

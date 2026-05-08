@@ -11,10 +11,17 @@ import threading
 app = Flask(__name__, static_folder="static")
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_MODEL   = "gemini-2.0-flash"
-GEMINI_URL     = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+GEMINI_API_KEY  = os.environ.get("GEMINI_API_KEY", "")
+GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 REQUEST_TIMEOUT = 55  # seconds — just under Cloud Run's 60s limit
+
+# Fallback waterfall — tried in order when quota is exhausted on one model
+GEMINI_MODELS = [
+    "gemini-2.0-flash",
+    "gemini-2.0-flash-lite",
+    "gemini-1.5-flash-8b",
+    "gemini-2.5-flash-preview-04-17",
+]
 
 # ── CACHE ─────────────────────────────────────────────────────────────────────
 # TTLCache: max 200 cached trips, each lives for 30 minutes
@@ -65,8 +72,18 @@ def make_cache_key(*args) -> str:
     return hashlib.md5(raw.encode()).hexdigest()
 
 
+def _parse_retry_after(error_body: dict) -> int:
+    """Extract retry-after seconds from a Gemini 429 error body."""
+    msg = error_body.get("message", "")
+    # e.g. "Please retry in 55.583747763s."
+    match = re.search(r'retry in ([\d.]+)s', msg)
+    if match:
+        return max(5, int(float(match.group(1))) + 2)  # add 2s buffer
+    return 60  # safe default
+
+
 def call_gemini(prompt: str, api_key: str) -> dict:
-    """Call the Gemini API with a single locked model — no retry waterfall."""
+    """Call Gemini with automatic model fallback on quota exhaustion (429)."""
     key = api_key or GEMINI_API_KEY
     if not key:
         return {"error": "No Gemini API key provided. Enter your key in Settings."}
@@ -75,31 +92,66 @@ def call_gemini(prompt: str, api_key: str) -> dict:
         "contents": [{"parts": [{"text": SYSTEM_PROMPT + "\n\nUSER REQUEST:\n" + prompt}]}],
         "generationConfig": {
             "temperature": 0.7,
-            "maxOutputTokens": 2048,   # reduced from 4096 for speed
+            "maxOutputTokens": 2048,
             "topP": 0.9
         }
     }
 
-    url = f"{GEMINI_URL}?key={key}"
-    try:
-        resp = requests.post(url, json=payload, timeout=REQUEST_TIMEOUT)
-    except requests.Timeout:
-        return {"error": "Gemini API timed out after 55 seconds. Please try again."}
-    except requests.ConnectionError:
-        return {"error": "Could not reach Gemini API. Check your network connection."}
+    last_429_retry = 60
+    any_429 = False
 
-    if resp.status_code != 200:
-        err = resp.json().get("error", {})
-        return {"error": f"Gemini API error {resp.status_code}: {err.get('message', resp.text[:200])}"}
+    for model in GEMINI_MODELS:
+        url = f"{GEMINI_BASE_URL}/{model}:generateContent?key={key}"
+        try:
+            resp = requests.post(url, json=payload, timeout=REQUEST_TIMEOUT)
+        except requests.Timeout:
+            continue  # try next model
+        except requests.ConnectionError:
+            return {"error": "Could not reach Gemini API. Check your network connection."}
 
-    try:
-        data     = resp.json()
-        raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
-        return extract_json_from_text(raw_text)
-    except (KeyError, IndexError) as e:
-        return {"error": f"Unexpected Gemini response structure: {str(e)}"}
-    except json.JSONDecodeError as e:
-        return {"error": f"Gemini returned invalid JSON: {str(e)}"}
+        if resp.status_code == 200:
+            try:
+                data     = resp.json()
+                raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
+                result   = extract_json_from_text(raw_text)
+                result["_model_used"] = model   # useful for debugging
+                return result
+            except (KeyError, IndexError) as e:
+                return {"error": f"Unexpected Gemini response structure: {str(e)}"}
+            except json.JSONDecodeError as e:
+                return {"error": f"Gemini returned invalid JSON: {str(e)}"}
+
+        if resp.status_code == 429:
+            any_429 = True
+            try:
+                err_body = resp.json().get("error", {})
+                last_429_retry = _parse_retry_after(err_body)
+            except Exception:
+                pass
+            continue  # try next model in waterfall
+
+        if resp.status_code == 404:
+            continue  # model not found for this key — try next
+
+        # Any other error (400, 401, 500, etc.) — return immediately
+        try:
+            err = resp.json().get("error", {})
+            msg = err.get("message", resp.text[:300])
+        except Exception:
+            msg = resp.text[:300]
+        return {"error": f"Gemini API error {resp.status_code}: {msg}"}
+
+    # All models exhausted
+    if any_429:
+        return {
+            "error": "quota_exceeded",
+            "retry_after": last_429_retry,
+            "message": (
+                f"All Gemini models hit rate limits. "
+                f"Auto-retrying in {last_429_retry} seconds..."
+            )
+        }
+    return {"error": "All Gemini models unavailable. Please try again later."}
 
 
 # ── ROUTES ────────────────────────────────────────────────────────────────────
