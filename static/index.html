@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="description" content="VOYAGER AI - Intelligent Travel Planning powered by Google Gemini AI">
+<title>VOYAGER AI — Smart Travel Planner</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<!-- SETUP MODAL -->
+<div id="setup-modal" class="overlay" role="dialog" aria-modal="true" aria-labelledby="setup-title">
+  <div class="modal">
+    <div class="modal-logo">🧭</div>
+    <h1 id="setup-title">VOYAGER AI</h1>
+    <p class="modal-sub">Intelligent Travel Planning · Powered by Google Gemini</p>
+    <div class="form-group">
+      <label for="api-key-input">Gemini API Key</label>
+      <div class="key-row">
+        <input type="password" id="api-key-input" placeholder="AIzaSy..." autocomplete="off" aria-label="Gemini API Key">
+        <button class="btn-eye" onclick="toggleKey()" aria-label="Toggle visibility">👁</button>
+      </div>
+      <a href="https://aistudio.google.com/app/apikey" target="_blank" class="get-key-link">Get free API key at Google AI Studio →</a>
+    </div>
+    <button class="btn-primary" onclick="startApp()" id="launch-btn">Launch VOYAGER AI →</button>
+    <p id="setup-error" class="error-msg" role="alert"></p>
+  </div>
+</div>
+
+<!-- MAIN APP -->
+<div id="app" class="hidden">
+  <header class="header" role="banner">
+    <div class="logo" aria-label="VOYAGER AI">
+      <span aria-hidden="true">🧭</span>
+      <span class="logo-text">VOYAGER</span>
+      <span class="logo-ai">AI</span>
+    </div>
+    <div class="trip-badge" id="trip-badge">No trip planned yet</div>
+    <div class="header-actions">
+      <button class="btn-ghost" onclick="saveTrip()" id="save-btn" disabled aria-label="Save trip">💾 Save</button>
+      <button class="btn-ghost" onclick="showSetup()" aria-label="Change API key">⚙ Settings</button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <!-- LEFT: CHAT -->
+    <section class="chat-pane" aria-label="AI Travel Planner">
+      <!-- QUICK START FORM -->
+      <div id="quick-start">
+        <div class="qs-hero">
+          <h2>Where would you like to go?</h2>
+          <p>Describe your dream trip and Gemini AI will plan it for you</p>
+        </div>
+        <div class="qs-form">
+          <input type="text" id="dest-input" placeholder="Tokyo, Paris, Bali, New York..." class="dest-input" aria-label="Destination" autocomplete="off">
+          <div class="row3">
+            <div class="param">
+              <label for="days-sel">Days</label>
+              <select id="days-sel" aria-label="Trip duration">
+                <option value="3">3 days</option>
+                <option value="5" selected>5 days</option>
+                <option value="7">7 days</option>
+                <option value="10">10 days</option>
+              </select>
+            </div>
+            <div class="param">
+              <label for="travelers-sel">Travelers</label>
+              <select id="travelers-sel" aria-label="Number of travelers">
+                <option value="1">Solo</option>
+                <option value="2" selected>2 people</option>
+                <option value="3">3 people</option>
+                <option value="4">4 people</option>
+              </select>
+            </div>
+            <div class="param">
+              <label for="budget-sel">Budget (USD)</label>
+              <select id="budget-sel" aria-label="Total budget">
+                <option value="500">$500</option>
+                <option value="1000">$1,000</option>
+                <option value="2000" selected>$2,000</option>
+                <option value="5000">$5,000</option>
+                <option value="10000">$10,000+</option>
+              </select>
+            </div>
+          </div>
+          <div class="chips-label">Travel Style</div>
+          <div class="chips" role="group" aria-label="Travel style">
+            <button class="chip" data-v="culture" onclick="toggleChip(this)" aria-pressed="false">🏛 Culture</button>
+            <button class="chip" data-v="food" onclick="toggleChip(this)" aria-pressed="false">🍜 Food</button>
+            <button class="chip" data-v="adventure" onclick="toggleChip(this)" aria-pressed="false">🧗 Adventure</button>
+            <button class="chip" data-v="relaxation" onclick="toggleChip(this)" aria-pressed="false">🏖 Relax</button>
+            <button class="chip" data-v="nature" onclick="toggleChip(this)" aria-pressed="false">🌿 Nature</button>
+            <button class="chip" data-v="nightlife" onclick="toggleChip(this)" aria-pressed="false">🌙 Nightlife</button>
+          </div>
+          <button class="btn-primary" onclick="planTrip()" id="plan-btn" aria-label="Plan my trip">
+            <span>✨ Plan My Trip with Gemini AI</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- CHAT MESSAGES -->
+      <div id="chat-msgs" class="chat-msgs hidden" role="log" aria-live="polite" aria-label="Planning conversation"></div>
+
+      <!-- CHAT INPUT -->
+      <div id="chat-input-area" class="chat-input-area hidden">
+        <form id="chat-form" onsubmit="sendModify(event)" aria-label="Modify trip">
+          <textarea id="chat-input" class="chat-input" placeholder='Try: "Make Day 2 more relaxing" or "Add a rooftop dinner"' rows="2" aria-label="Modification request"></textarea>
+          <button type="submit" class="btn-send" aria-label="Send">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+          </button>
+        </form>
+        <button class="btn-replan" onclick="showQuickStart()" aria-label="Plan new trip">+ New Trip</button>
+      </div>
+    </section>
+
+    <!-- RIGHT: MAP + STATS -->
+    <section class="map-pane" aria-label="Trip map and details">
+      <div id="map-placeholder" class="map-placeholder">
+        <div class="map-placeholder-inner">
+          <span aria-hidden="true">🗺️</span>
+          <p>Your trip map will appear here</p>
+        </div>
+      </div>
+      <iframe id="map-frame" class="map-frame hidden" title="Google Maps showing trip destination" allowfullscreen loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe>
+      <div class="stats-overlay" id="stats-overlay" aria-label="Trip statistics">
+        <div class="stat-card">
+          <div class="stat-label">Total Budget</div>
+          <div class="stat-val" id="stat-budget">—</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Days Planned</div>
+          <div class="stat-val" id="stat-days">—</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Activities</div>
+          <div class="stat-val" id="stat-acts">—</div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- ITINERARY PANEL -->
+  <section class="itinerary" id="itinerary" aria-label="Day-by-day itinerary">
+    <div class="itin-header">
+      <span class="itin-title" id="itin-title">📍 Itinerary</span>
+      <span class="powered">Gemini AI · Google Maps</span>
+    </div>
+    <div id="day-cards" class="day-cards" role="list"></div>
+  </section>
+</div>
+
+<!-- TOAST -->
+<div id="toast" class="toast hidden" role="alert" aria-live="assertive"></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
