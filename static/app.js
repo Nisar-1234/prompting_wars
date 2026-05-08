@@ -2,6 +2,9 @@
 let apiKey = localStorage.getItem('voyager_key') || '';
 let currentTrip = null;
 let selectedPrefs = [];
+let _planning = false;   // debounce guard
+let _modifying = false;  // debounce guard
+let _currentAbort = null; // AbortController reference
 
 // ── SETUP ─────────────────────────────────────────────────────
 function startApp() {
@@ -45,13 +48,16 @@ function toggleChip(el) {
 
 // ── PLAN TRIP ─────────────────────────────────────────────────
 async function planTrip() {
+  if (_planning) return;   // debounce: ignore duplicate clicks
+
   const dest = document.getElementById('dest-input').value.trim();
   if (!dest) { showToast('Please enter a destination'); return; }
 
-  const days = document.getElementById('days-sel').value;
+  const days      = document.getElementById('days-sel').value;
   const travelers = document.getElementById('travelers-sel').value;
-  const budget = document.getElementById('budget-sel').value;
+  const budget    = document.getElementById('budget-sel').value;
 
+  _planning = true;
   const btn = document.getElementById('plan-btn');
   btn.disabled = true;
   btn.innerHTML = '<span class="dot"></span><span class="dot"></span><span class="dot"></span>&nbsp; Gemini is planning...';
@@ -63,16 +69,21 @@ async function planTrip() {
 
   const thinkId = addThinking();
 
+  // 90-second client timeout
+  _currentAbort = new AbortController();
+  const timeoutId = setTimeout(() => _currentAbort.abort(), 90000);
+
   try {
     const res = await fetch('/api/plan', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ destination: dest, days: +days, travelers: +travelers, budget: +budget, preferences: selectedPrefs, api_key: apiKey })
+      body: JSON.stringify({ destination: dest, days: +days, travelers: +travelers, budget: +budget, preferences: selectedPrefs, api_key: apiKey }),
+      signal: _currentAbort.signal
     });
 
+    clearTimeout(timeoutId);
     const data = await res.json();
     console.log('API response:', data);
-
     removeThinking(thinkId);
 
     if (data.error) {
@@ -81,12 +92,18 @@ async function planTrip() {
     }
 
     currentTrip = data;
-    renderTrip(data, dest);
+    renderTrip(data, dest, data._cached);
   } catch (e) {
+    clearTimeout(timeoutId);
     removeThinking(thinkId);
-    console.error('planTrip error:', e);
-    addMsg('ai', `⚠️ <strong>Network Error:</strong><br>${e.message}<br><br>Check your connection or try again.`);
+    if (e.name === 'AbortError') {
+      addMsg('ai', '⚠️ <strong>Request timed out</strong> after 90 seconds.<br>Gemini may be busy — please try again.');
+    } else {
+      console.error('planTrip error:', e);
+      addMsg('ai', `⚠️ <strong>Network Error:</strong><br>${e.message}<br><br>Check your connection or try again.`);
+    }
   } finally {
+    _planning = false;
     btn.disabled = false;
     btn.innerHTML = '<span>✨ Plan My Trip with Gemini AI</span>';
   }
@@ -95,34 +112,50 @@ async function planTrip() {
 // ── MODIFY TRIP ───────────────────────────────────────────────
 async function sendModify(e) {
   e.preventDefault();
+  if (_modifying) return;  // debounce
+
   const input = document.getElementById('chat-input');
   const msg = input.value.trim();
   if (!msg || !currentTrip) return;
 
+  _modifying = true;
   addMsg('user', msg);
   input.value = '';
   const thinkId = addThinking();
+
+  // 90-second client timeout
+  const abort = new AbortController();
+  const timeoutId = setTimeout(() => abort.abort(), 90000);
 
   try {
     const res = await fetch('/api/modify', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ current_itinerary: currentTrip, modification: msg, api_key: apiKey })
+      body: JSON.stringify({ current_itinerary: currentTrip, modification: msg, api_key: apiKey }),
+      signal: abort.signal
     });
+    clearTimeout(timeoutId);
     const data = await res.json();
     if (data.error) throw new Error(data.error);
     removeThinking(thinkId);
     currentTrip = data;
-    renderTrip(data, data.destination);
+    renderTrip(data, data.destination, false);
     addMsg('ai', `✅ Updated! ${data.summary || 'Your itinerary has been modified.'}`);
   } catch (e) {
+    clearTimeout(timeoutId);
     removeThinking(thinkId);
-    addMsg('ai', '⚠️ Error: ' + e.message);
+    if (e.name === 'AbortError') {
+      addMsg('ai', '⚠️ <strong>Request timed out</strong> — please try a simpler modification.');
+    } else {
+      addMsg('ai', '⚠️ Error: ' + e.message);
+    }
+  } finally {
+    _modifying = false;
   }
 }
 
 // ── RENDER ────────────────────────────────────────────────────
-function renderTrip(trip, dest) {
+function renderTrip(trip, dest, fromCache = false) {
   // Switch to chat view
   document.getElementById('quick-start').classList.add('hidden');
   document.getElementById('chat-msgs').classList.remove('hidden');
@@ -171,8 +204,9 @@ function renderTrip(trip, dest) {
   });
 
   // Initial AI message
-  const highlights = trip.highlights?.join(' · ') || '';
-  addMsg('ai', `✈️ <strong>${trip.trip_title}</strong><br><br>${trip.summary || ''}<br><br>${highlights ? '🌟 ' + highlights : ''}<br><br><em>Ask me to change anything!</em>`);
+  const highlights  = trip.highlights?.join(' · ') || '';
+  const cacheNotice = fromCache ? ' <span style="font-size:0.75rem;background:#10b98133;color:#10b981;padding:2px 7px;border-radius:9px;margin-left:6px;">⚡ Instant</span>' : '';
+  addMsg('ai', `✈️ <strong>${trip.trip_title}</strong>${cacheNotice}<br><br>${trip.summary || ''}<br><br>${highlights ? '🌟 ' + highlights : ''}<br><br><em>Ask me to change anything!</em>`);
 }
 
 function selectDay(day, card, dest) {
