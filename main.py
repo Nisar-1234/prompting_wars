@@ -55,12 +55,12 @@ def call_gemini(prompt: str, api_key: str) -> dict:
     if not key:
         return {"error": "No Gemini API key provided"}
 
-    # Try models in order of preference
+    # Models confirmed available for this API key (via ListModels)
     models_to_try = [
-        "gemini-1.5-flash",
-        "gemini-1.5-pro",
-        "gemini-1.0-pro",
-        "gemini-pro"
+        "gemini-2.0-flash",
+        "gemini-2.5-flash",
+        "gemini-2.0-flash-lite",
+        "gemini-flash-latest",
     ]
 
     payload = {
