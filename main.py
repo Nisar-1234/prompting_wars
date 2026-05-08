@@ -50,6 +50,20 @@ When planning a trip, return this exact JSON structure:
 }"""
 
 
+def extract_json_from_text(text: str) -> dict:
+    """Robustly extract JSON from Gemini response which may contain markdown."""
+    # Strip markdown code fences
+    text = re.sub(r'```json\s*', '', text)
+    text = re.sub(r'```\s*', '', text)
+    text = text.strip()
+    # Find outermost JSON object
+    start = text.find('{')
+    end = text.rfind('}') + 1
+    if start != -1 and end > start:
+        text = text[start:end]
+    return json.loads(text)
+
+
 def call_gemini(prompt: str, api_key: str) -> dict:
     key = api_key or GEMINI_API_KEY
     if not key:
@@ -65,23 +79,25 @@ def call_gemini(prompt: str, api_key: str) -> dict:
 
     payload = {
         "contents": [{"parts": [{"text": SYSTEM_PROMPT + "\n\nUSER REQUEST:\n" + prompt}]}],
-        "generationConfig": {"temperature": 0.7, "maxOutputTokens": 4096}
+        "generationConfig": {"temperature": 0.7, "maxOutputTokens": 8192}
     }
 
     last_error = ""
     for model in models_to_try:
-        for api_version in ["v1", "v1beta"]:
+        for api_version in ["v1beta", "v1"]:
             url = f"https://generativelanguage.googleapis.com/{api_version}/models/{model}:generateContent?key={key}"
             try:
-                resp = requests.post(url, json=payload, timeout=30)
+                resp = requests.post(url, json=payload, timeout=60)
                 if resp.status_code == 200:
                     data = resp.json()
-                    text = data["candidates"][0]["content"]["parts"][0]["text"]
-                    text = re.sub(r"```json\s*|\s*```", "", text).strip()
-                    return json.loads(text)
-                last_error = f"{model} ({api_version}): {resp.status_code} - {resp.text[:100]}"
+                    raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
+                    return extract_json_from_text(raw_text)
+                last_error = f"{model} ({api_version}): {resp.status_code} - {resp.text[:200]}"
+            except json.JSONDecodeError as e:
+                last_error = f"JSON parse error with {model}: {str(e)}"
+                continue
             except Exception as e:
-                last_error = str(e)
+                last_error = f"{model} ({api_version}): {str(e)}"
                 continue
 
     return {"error": f"All models failed. Last error: {last_error}"}

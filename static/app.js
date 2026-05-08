@@ -54,7 +54,14 @@ async function planTrip() {
 
   const btn = document.getElementById('plan-btn');
   btn.disabled = true;
-  btn.innerHTML = '<span class="dot"></span><span class="dot"></span><span class="dot"></span>';
+  btn.innerHTML = '<span class="dot"></span><span class="dot"></span><span class="dot"></span>&nbsp; Gemini is planning...';
+
+  // Switch to chat view immediately to show progress
+  document.getElementById('quick-start').classList.add('hidden');
+  document.getElementById('chat-msgs').classList.remove('hidden');
+  document.getElementById('chat-input-area').classList.remove('hidden');
+
+  const thinkId = addThinking();
 
   try {
     const res = await fetch('/api/plan', {
@@ -62,12 +69,23 @@ async function planTrip() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ destination: dest, days: +days, travelers: +travelers, budget: +budget, preferences: selectedPrefs, api_key: apiKey })
     });
+
     const data = await res.json();
-    if (data.error) throw new Error(data.error);
+    console.log('API response:', data);
+
+    removeThinking(thinkId);
+
+    if (data.error) {
+      addMsg('ai', `⚠️ <strong>Error from Gemini API:</strong><br><code>${data.error}</code><br><br>Please check your API key in Settings and try again.`);
+      return;
+    }
+
     currentTrip = data;
     renderTrip(data, dest);
   } catch (e) {
-    showToast('Error: ' + e.message, true);
+    removeThinking(thinkId);
+    console.error('planTrip error:', e);
+    addMsg('ai', `⚠️ <strong>Network Error:</strong><br>${e.message}<br><br>Check your connection or try again.`);
   } finally {
     btn.disabled = false;
     btn.innerHTML = '<span>✨ Plan My Trip with Gemini AI</span>';
