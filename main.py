@@ -11,40 +11,25 @@ GEMINI_BASE = "https://generativelanguage.googleapis.com/v1"
 GEMINI_MODEL = "gemini-1.5-flash"
 GEMINI_URL = f"{GEMINI_BASE}/models/{GEMINI_MODEL}:generateContent"
 
-SYSTEM_PROMPT = """You are VOYAGER, an expert AI travel planner. Always return ONLY valid JSON, no markdown, no explanation.
+SYSTEM_PROMPT = """You are VOYAGER, an expert AI travel planner. Return ONLY valid JSON, no markdown, no explanation.
 
-When planning a trip, return this exact JSON structure:
+Return this exact JSON structure (keep descriptions brief for speed):
 {
   "trip_title": "string",
   "destination": "string",
-  "summary": "string (2-3 sentences about the trip)",
+  "summary": "string (1-2 sentences)",
   "highlights": ["string", "string", "string"],
-  "estimated_budget": {
-    "accommodation": number,
-    "food": number,
-    "activities": number,
-    "transport": number,
-    "total": number
-  },
+  "estimated_budget": {"accommodation": N, "food": N, "activities": N, "transport": N, "total": N},
   "days": [
     {
       "day": 1,
       "theme": "string",
       "activities": [
-        {
-          "time": "09:00",
-          "name": "Place Name",
-          "description": "string",
-          "duration": "2 hours",
-          "cost": number,
-          "type": "attraction|food|transport|accommodation",
-          "tips": "string"
-        }
+        {"time": "09:00", "name": "Place Name", "description": "brief string", "duration": "2 hours", "cost": N, "type": "attraction|food|transport", "tips": "brief tip"}
       ],
-      "day_total_cost": number
+      "day_total_cost": N
     }
   ],
-  "packing_tips": ["string"],
   "best_time_to_visit": "string",
   "local_transport": "string"
 }"""
@@ -79,7 +64,7 @@ def call_gemini(prompt: str, api_key: str) -> dict:
 
     payload = {
         "contents": [{"parts": [{"text": SYSTEM_PROMPT + "\n\nUSER REQUEST:\n" + prompt}]}],
-        "generationConfig": {"temperature": 0.7, "maxOutputTokens": 8192}
+        "generationConfig": {"temperature": 0.7, "maxOutputTokens": 4096}
     }
 
     last_error = ""
